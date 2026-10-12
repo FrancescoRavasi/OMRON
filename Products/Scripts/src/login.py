@@ -9,7 +9,6 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
-# Helper to inject log container
 def setup_ui_log(page):
     page.evaluate("""() => {
         if (document.getElementById('automation-log')) return;
@@ -36,20 +35,21 @@ def login():
     
     os.makedirs(DATA_DIR, exist_ok=True)
     
-    print("Scegli la modalità di scansione:")
-    print("1. Tutte le combinazioni (1296 combinazioni)")
-    print("2. Una singola combinazione di 2 caratteri")
+    print("Scegli la modalità di ricerca/scansione:")
+    print("1. Tutte le combinazioni di 2 caratteri (1296 combinazioni)")
+    print("2. Una singola combinazione o codice specifico")
     choice = input("Inserisci la tua scelta [1 o 2]: ").strip()
 
     if choice == '2':
-        single_combo = input("Inserisci la combinazione di 2 caratteri da cercare (es. 'ef'): ").strip().lower()
-        if len(single_combo) != 2:
-            print("Errore: la combinazione deve essere esattamente di 2 caratteri.")
+        single_query = input("Inserisci il codice o combinazione da cercare: ").strip()
+        if not single_query:
+            print("Errore: nessun valore inserito.")
             return
-        combinations = [single_combo]
+        combinations = [single_query]
     else:
         chars = string.ascii_lowercase + string.digits
         combinations = [''.join(p) for p in itertools.product(chars, repeat=2)]
+        combinations.reverse()
         
     total_combinations = len(combinations)
     
@@ -80,17 +80,14 @@ def login():
         
         print(f"Trovato file di riepilogo esistente: {RIEPILOGO_FILE}. Ripresa della sessione in corso...")
         
-        # Leggi le combinazioni già completate
         if os.path.exists(RIEPILOGO_FILE):
             with open(RIEPILOGO_FILE, 'r', encoding='utf-8') as rf:
                 for line in rf:
                     parts = line.split(':')
                     if parts:
                         combo_key = parts[0].strip()
-                        if len(combo_key) == 2:
-                            completed_combos.add(combo_key)
+                        completed_combos.add(combo_key)
                             
-        # Carica i prodotti esistenti dal file JSON corrispondente
         if os.path.exists(LISTA_FILE):
             try:
                 with open(LISTA_FILE, 'r', encoding='utf-8') as f:
@@ -115,7 +112,7 @@ def login():
             RIEPILOGO_FILE = os.path.join(DATA_DIR, f'riepilogo_{start_time_str}.txt')
         print(f"Avvio nuova ricerca. File di output: {LISTA_FILE} e {RIEPILOGO_FILE}")
         
-    print(f"Totale combinazioni da scansionare: {total_combinations} (Già completate: {len(completed_combos)})")
+    print(f"Totale elementi/combinazioni da scansionare: {total_combinations} (Già completate: {len(completed_combos)})")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -125,10 +122,8 @@ def login():
         )
         
         if os.path.exists(AUTH_FILE):
-            print("Caricamento sessione esistente...")
             context = browser.new_context(storage_state=AUTH_FILE)
         else:
-            print("Nessuna sessione trovata. Eseguire il login manuale...")
             context = browser.new_context()
 
         page = context.new_page()
@@ -139,9 +134,7 @@ def login():
                 print("Effettua il login manualmente nel browser...")
                 page.wait_for_url('https://industrial.omron.it/it/home', timeout=300000)
                 context.storage_state(path=AUTH_FILE)
-                print("Login effettuato e sessione salvata.")
             
-            # Naviga alla pagina dashboard una volta
             page.goto('https://industrial.omron.it/it/dashboard/product-information')
             page.wait_for_load_state('networkidle')
             setup_ui_log(page)
@@ -150,15 +143,13 @@ def login():
                 if combo in completed_combos:
                     continue
                 
-                remaining_combos = total_combinations - len(completed_combos) - 1
-                print(f"\n[Progresso] Combinazione {index}/{total_combinations} (Rimanenti: {remaining_combos}) -> Cercando '{combo}'...")
+                print(f"\n[Progresso] Ricerca {index}/{total_combinations} -> '{combo}'...")
                 
                 url = f'https://industrial.omron.it/it/api/product_information/products?name={combo}'
                 
                 success = False
                 response = None
                 
-                # Retry logic: fino a 5 tentativi consecutivi con attesa di 10 secondi in caso di errore/blocco
                 for attempt in range(1, 6):
                     try:
                         response = page.request.get(url)
@@ -168,16 +159,17 @@ def login():
                         else:
                             print(f"Tentativo {attempt}/5: API Error {response.status} per '{combo}'. Attendendo 10 secondi...")
                     except Exception as req_err:
-                        print(f"Tentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attendendo 10 secondi...")
+                        print(f"Tentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attendendo 10 secondiTabData...")
                     
                     if attempt < 5:
                         time.sleep(10)
                 
                 if not success:
-                    print(f"Errore critico: impossibile completare la richiesta per '{combo}' dopo 5 tentativi consecutivi. Interruzione script.")
+                    print(f"Errore di connessione persistente per '{combo}'. Attendo 20 secondi e salto alla combinazione successiva...")
                     with open(RIEPILOGO_FILE, 'a', encoding='utf-8') as rf:
-                        rf.write(f"{combo}: ERRORE CRITICO DOPO 5 TENTATIVI\n")
-                    break
+                        rf.write(f"{combo}: ERRORE CONNESSIONE (SALTATO)\n")
+                    time.sleep(20)
+                    continue
                 
                 if response and response.status == 200:
                     product_data = response.json()
@@ -186,83 +178,55 @@ def login():
                     
                     new_count = 0
                     for item in product_list:
-                        status = str(item.get('status_text') or item.get('statusText') or '').strip()
-                        if status.lower() not in ['stocked', 'non-stocked']:
+                        status_text = str(item.get('status_text') or item.get('statusText') or item.get('status') or '').strip()
+                        if 'discontinued' in status_text.lower():
                             continue
                         
-                        item_id = item.get('id')
-                        desc_text = None
+                        oc_code = item.get('oc_code') or item.get('name')
+                        if not oc_code:
+                            continue
                         
-                        # Recupera i dettagli completi del singolo prodotto dall'endpoint di dettaglio per ottenere la descrizione corretta
-                        if item_id:
-                            detail_url = f'https://industrial.omron.it/it/api/product_information/products/{item_id}'
-                            try:
-                                detail_resp = page.request.get(detail_url)
-                                if detail_resp.status == 200:
-                                    detail_data = detail_resp.json()
-                                    
-                                    # Salva un file di debug per il primo prodotto trovato per ispezionare tutti i campi
-                                    debug_path = os.path.join(DATA_DIR, 'debug_product.json')
-                                    if not os.path.exists(debug_path):
-                                        with open(debug_path, 'w', encoding='utf-8') as df:
-                                            json.dump(detail_data, df, ensure_ascii=False, indent=4)
-                                        print(f"[DEBUG] Salvato file di esempio in {debug_path}")
-                                        
-                                    prod_info = detail_data.get('data') if isinstance(detail_data, dict) and 'data' in detail_data else detail_data
-                                    if isinstance(prod_info, dict):
-                                        item.update(prod_info)
-                                        
-                                        # Cerca in vari campi possibili la descrizione dettagliata
-                                        for key in ['long_description', 'subtitle', 'summary', 'description', 'text', 'features', 'product_description']:
-                                            val = prod_info.get(key)
-                                            if isinstance(val, dict):
-                                                desc_text = val.get('text') or val.get('value')
-                                                if desc_text:
-                                                    break
-                                            elif isinstance(val, str) and val.strip() and val != prod_info.get('oc_code'):
-                                                desc_text = val
-                                                break
-                            except Exception as e:
-                                print(f"[DEBUG] Errore recupero dettaglio: {e}")
-                        
-                        if not desc_text:
-                            desc = item.get('description')
-                            if isinstance(desc, dict):
-                                desc_text = desc.get('text')
-                            elif isinstance(desc, str):
-                                desc_text = desc
-                        
-                        if desc_text:
-                            item['text'] = desc_text
-                            item['description_text'] = desc_text
-                        
-                        uid = item.get('id') or item.get('oc_code')
-                        if uid and uid not in seen_ids:
-                            seen_ids.add(uid)
-                            all_products.append(item)
-                            new_count += 1
+                        # Esegue il secondo endpoint per recuperare tutte le informazioni del singolo oc_code
+                        detail_url = f'https://industrial.omron.it/it/api/product_information/products/{oc_code}'
+                        try:
+                            time.sleep(0.8)
+                            detail_resp = page.request.get(detail_url, timeout=8000)
+                            if detail_resp.status == 200:
+                                detail_json = detail_resp.json()
+                                prod_info = detail_json.get('data') if isinstance(detail_json, dict) and 'data' in detail_json else detail_json
+                                
+                                if isinstance(prod_info, dict):
+                                    uid = prod_info.get('id') or prod_info.get('oc_code') or oc_code
+                                    if uid and uid not in seen_ids:
+                                        seen_ids.add(uid)
+                                        all_products.append(prod_info)
+                                        new_count += 1
+                                else:
+                                    if oc_code not in seen_ids:
+                                        seen_ids.add(oc_code)
+                                        all_products.append(item)
+                                        new_count += 1
+                        except Exception as e:
+                            if oc_code not in seen_ids:
+                                seen_ids.add(oc_code)
+                                all_products.append(item)
+                                new_count += 1
                     
-                    print(f"Trovati {found_count} risultati per '{combo}' (Nuovi aggiunti: {new_count}, Totale unici accumulati: {len(all_products)})")
+                    print(f"Trovati {found_count} risultati per '{combo}' (Nuovi dettagli validi aggiunti: {new_count}, Totale accumulati: {len(all_products)})")
                     
-                    # Aggiorna il file di riepilogo con timestamp
                     with open(RIEPILOGO_FILE, 'a', encoding='utf-8') as rf:
-                        rf.write(f"{combo}: {found_count} risultati (nuovi unici: {new_count})\n")
+                        rf.write(f"{combo}: {found_count} risultati (nuovi dettagli validi: {new_count})\n")
                     
                     completed_combos.add(combo)
 
-                    # Aggiorna lista con timestamp man mano solo se ci sono nuovi prodotti
-                    if new_count > 0:
+                    if new_count > 0 or found_count > 0:
                         with open(LISTA_FILE, 'w', encoding='utf-8') as f:
                             json.dump({"data": all_products}, f, ensure_ascii=False, indent=4)
-                        print(f"File {LISTA_FILE} e {RIEPILOGO_FILE} aggiornati.")
-                    else:
-                        print(f"File {RIEPILOGO_FILE} aggiornato (nessun nuovo prodotto per '{combo}', salto scrittura lista).")
+                        print(f"File {LISTA_FILE} aggiornato.")
                 
-                # Ritardo di 1 secondo tra un'iterazione e l'altra
-                time.sleep(1.0)
+                time.sleep(1.5)
             
             print(f"\nProcesso completato! Totale prodotti unici salvati in {LISTA_FILE}: {len(all_products)}")
-            print(f"Riepilogo per combinazione salvato in {RIEPILOGO_FILE}")
 
         except Exception as e:
             print(f'Error: {e}')
