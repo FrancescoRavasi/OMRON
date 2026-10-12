@@ -159,7 +159,7 @@ def login():
                         else:
                             print(f"Tentativo {attempt}/5: API Error {response.status} per '{combo}'. Attendendo 10 secondi...")
                     except Exception as req_err:
-                        print(f"Tentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attendendo 10 secondiTabData...")
+                        print(f"Tentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attendendo 10 secondi...")
                     
                     if attempt < 5:
                         time.sleep(10)
