@@ -28,6 +28,46 @@ def setup_ui_log(page):
         document.body.appendChild(div);
     }""")
 
+def run_countdown_on_page(page, seconds=60):
+    print(f"\n[⚠️ AVVISO] Rilevata possibile sospensione / rate limit dal server. Attesa di {seconds} secondi con countdown visibile...")
+    for remaining in range(seconds, 0, -1):
+        try:
+            page.evaluate(f"""(sec) => {{
+                let log = document.getElementById('automation-log');
+                if (!log) return;
+                let cd = document.getElementById('countdown-timer');
+                if (!cd) {{
+                    cd = document.createElement('div');
+                    cd.id = 'countdown-timer';
+                    cd.style.color = '#ff4444';
+                    cd.style.fontWeight = 'bold';
+                    cd.style.marginTop = '8px';
+                    cd.style.borderTop = '1px solid #444';
+                    cd.style.paddingTop = '5px';
+                    log.appendChild(cd);
+                }}
+                cd.innerText = `⏳ Traffico elevato / Sospensione. Attesa: ${{sec}}s`;
+            }}""", remaining)
+        except Exception:
+            pass
+        time.sleep(1)
+    
+    try:
+        page.evaluate("""() => {
+            let cd = document.getElementById('countdown-timer');
+            if (cd) cd.remove();
+        }""")
+    except Exception:
+        pass
+
+def print_progress_bar(iteration, total, prefix='', suffix='', length=30, fill='█'):
+    percent = ("{0:.1f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = fill * filled_length + '-' * (length - filled_length)
+    print(f'\r{prefix} |{bar}| {percent}% {iteration}/{total} {suffix}', end='\r')
+    if iteration == total:
+        print()
+
 def login():
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
     DATA_DIR = os.path.join(BASE_DIR, 'data', 'products')
@@ -94,7 +134,7 @@ def login():
                     data_json = json.load(f)
                     all_products = data_json.get('data', [])
                     for item in all_products:
-                        uid = item.get('id') or item.get('oc_code')
+                        uid = item.get('OC Code') or item.get('Codice')
                         if uid:
                             seen_ids.add(uid)
                 print(f"Caricati {len(all_products)} prodotti unici esistenti da {LISTA_FILE}.")
@@ -141,9 +181,10 @@ def login():
             
             for index, combo in enumerate(combinations, start=1):
                 if combo in completed_combos:
+                    print_progress_bar(index, total_combinations, prefix='Avanzamento', suffix=f"Saltato ({combo})")
                     continue
                 
-                print(f"\n[Progresso] Ricerca {index}/{total_combinations} -> '{combo}'...")
+                print_progress_bar(index, total_combinations, prefix='Avanzamento', suffix=f"Elaborazione '{combo}'")
                 
                 url = f'https://industrial.omron.it/it/api/product_information/products?name={combo}'
                 
@@ -156,19 +197,21 @@ def login():
                         if response.status == 200:
                             success = True
                             break
+                        elif response.status in (429, 503, 403):
+                            print(f"\n[Tentativo {attempt}/5] Rilevato status server {response.status} per '{combo}'.")
+                            run_countdown_on_page(page, 60)
                         else:
-                            print(f"Tentativo {attempt}/5: API Error {response.status} per '{combo}'. Attendendo 10 secondi...")
+                            print(f"\nTentativo {attempt}/5: API Error {response.status} per '{combo}'. Attesa 3s...")
+                            time.sleep(3)
                     except Exception as req_err:
-                        print(f"Tentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attendendo 10 secondi...")
-                    
-                    if attempt < 5:
-                        time.sleep(10)
+                        print(f"\nTentativo {attempt}/5: Errore di rete ({req_err}) per '{combo}'. Attesa 3s...")
+                        time.sleep(3)
                 
                 if not success:
-                    print(f"Errore di connessione persistente per '{combo}'. Attendo 20 secondi e salto alla combinazione successiva...")
+                    print(f"\nErrore persistente per '{combo}'. Attesa precauzionale di 60s con countdown...")
+                    run_countdown_on_page(page, 60)
                     with open(RIEPILOGO_FILE, 'a', encoding='utf-8') as rf:
-                        rf.write(f"{combo}: ERRORE CONNESSIONE (SALTATO)\n")
-                    time.sleep(20)
+                        rf.write(f"{combo}: ERRORE CONNESSIONE / RATE LIMIT (SALTATO)\n")
                     continue
                 
                 if response and response.status == 200:
@@ -186,50 +229,45 @@ def login():
                         if not oc_code:
                             continue
                         
-                        # Esegue il secondo endpoint per recuperare tutte le informazioni del singolo oc_code
-                        detail_url = f'https://industrial.omron.it/it/api/product_information/products/{oc_code}'
-                        try:
-                            time.sleep(0.8)
-                            detail_resp = page.request.get(detail_url, timeout=8000)
-                            if detail_resp.status == 200:
-                                detail_json = detail_resp.json()
-                                prod_info = detail_json.get('data') if isinstance(detail_json, dict) and 'data' in detail_json else detail_json
-                                
-                                if isinstance(prod_info, dict):
-                                    uid = prod_info.get('id') or prod_info.get('oc_code') or oc_code
-                                    if uid and uid not in seen_ids:
-                                        seen_ids.add(uid)
-                                        all_products.append(prod_info)
-                                        new_count += 1
-                                else:
-                                    if oc_code not in seen_ids:
-                                        seen_ids.add(oc_code)
-                                        all_products.append(item)
-                                        new_count += 1
-                        except Exception as e:
-                            if oc_code not in seen_ids:
-                                seen_ids.add(oc_code)
-                                all_products.append(item)
-                                new_count += 1
-                    
-                    print(f"Trovati {found_count} risultati per '{combo}' (Nuovi dettagli validi aggiunti: {new_count}, Totale accumulati: {len(all_products)})")
+                        if oc_code in seen_ids:
+                            continue
+                        
+                        seen_ids.add(oc_code)
+                        
+                        codice = item.get('item_name') or oc_code
+                        descrizione = item.get('description') or 'Non disponibile'
+                        prezzo = item.get('list_price') or item.get('net_price_eur') or 'Non disponibile'
+                        stock = item.get('stock_quantity')
+                        stato = status_text if status_text else 'Non disponibile'
+                        
+                        clean_product = {
+                            "Codice": codice,
+                            "OC Code": oc_code,
+                            "Descrizione": descrizione,
+                            "Prezzo di Listino": prezzo,
+                            "Quantità in Stock": stock,
+                            "Stato": stato
+                        }
+                        
+                        all_products.append(clean_product)
+                        new_count += 1
                     
                     with open(RIEPILOGO_FILE, 'a', encoding='utf-8') as rf:
-                        rf.write(f"{combo}: {found_count} risultati (nuovi dettagli validi: {new_count})\n")
+                        rf.write(f"{combo}: {found_count} risultati (nuovi validi: {new_count})\n")
                     
                     completed_combos.add(combo)
 
                     if new_count > 0 or found_count > 0:
                         with open(LISTA_FILE, 'w', encoding='utf-8') as f:
                             json.dump({"data": all_products}, f, ensure_ascii=False, indent=4)
-                        print(f"File {LISTA_FILE} aggiornato.")
                 
-                time.sleep(1.5)
+                # Delay minimo tra le combinazioni per massima velocità
+                time.sleep(0.05)
             
-            print(f"\nProcesso completato! Totale prodotti unici salvati in {LISTA_FILE}: {len(all_products)}")
+            print(f"\n\nProcesso completato! Totale prodotti unici salvati in {LISTA_FILE}: {len(all_products)}")
 
         except Exception as e:
-            print(f'Error: {e}')
+            print(f'\nError: {e}')
         finally:
             browser.close()
 
