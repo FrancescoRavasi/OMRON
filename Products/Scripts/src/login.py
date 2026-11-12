@@ -235,10 +235,25 @@ def login():
                         seen_ids.add(oc_code)
                         
                         codice = item.get('item_name') or oc_code
-                        descrizione = item.get('description') or 'Non disponibile'
                         prezzo = item.get('list_price') or item.get('net_price_eur') or 'Non disponibile'
                         stock = item.get('stock_quantity')
                         stato = status_text if status_text else 'Non disponibile'
+                        
+                        # Recupera la descrizione ricca dall'endpoint di dettaglio
+                        descrizione = item.get('description') or 'Non disponibile'
+                        detail_url = f'https://industrial.omron.it/it/api/product_information/products/{oc_code}'
+                        try:
+                            time.sleep(0.05) # Minimo delay per evitare sovraccarico
+                            detail_resp = page.request.get(detail_url, timeout=5000)
+                            if detail_resp.status == 200:
+                                detail_json = detail_resp.json()
+                                prod_info = detail_json.get('data') if isinstance(detail_json, dict) and 'data' in detail_json else detail_json
+                                if isinstance(prod_info, dict):
+                                    descrizione = prod_info.get('description') or prod_info.get('long_description') or descrizione
+                            elif detail_resp.status in (429, 503):
+                                run_countdown_on_page(page, 60)
+                        except Exception:
+                            pass
                         
                         clean_product = {
                             "Codice": codice,
@@ -261,7 +276,6 @@ def login():
                         with open(LISTA_FILE, 'w', encoding='utf-8') as f:
                             json.dump({"data": all_products}, f, ensure_ascii=False, indent=4)
                 
-                # Delay minimo tra le combinazioni per massima velocità
                 time.sleep(0.05)
             
             print(f"\n\nProcesso completato! Totale prodotti unici salvati in {LISTA_FILE}: {len(all_products)}")

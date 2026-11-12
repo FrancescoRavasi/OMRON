@@ -1,7 +1,7 @@
 import os
 import glob
 import json
-import pandas as pd
+import openpyxl
 
 def main():
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -26,14 +26,26 @@ def main():
         print("Il file JSON non contiene prodotti.")
         return
         
-    df = pd.DataFrame(products)
+    # Crea un nuovo Workbook con openpyxl (senza pandas/numpy)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Prodotti OMRON"
     
+    # Scrivi l'intestazione
+    headers = list(products[0].keys())
+    ws.append(headers)
+    
+    # Scrivi le righe dei dati
+    for prod in products:
+        row = [prod.get(h, '') for h in headers]
+        ws.append(row)
+        
     # Definisci il nome del file Excel di output
     timestamp_str = os.path.basename(latest_json).replace('lista_', '').replace('.json', '')
     excel_filename = os.path.join(DATA_DIR, f'prodotti_omron_{timestamp_str}.xlsx')
     
     print(f"Generazione del file Excel in corso: {excel_filename}")
-    df.to_excel(excel_filename, index=False, engine='openpyxl')
+    wb.save(excel_filename)
     
     print(f"Conversione completata con successo! File salvato in: {excel_filename}")
 
