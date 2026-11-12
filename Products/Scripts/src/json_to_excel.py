@@ -31,8 +31,12 @@ def main():
     ws = wb.active
     ws.title = "Prodotti OMRON"
     
-    # Scrivi l'intestazione
-    headers = list(products[0].keys())
+    # Raccogli tutte le chiavi uniche da tutti i prodotti per evitare di perdere colonne
+    headers = []
+    for prod in products:
+        for key in prod.keys():
+            if key not in headers:
+                headers.append(key)
     ws.append(headers)
     
     # Scrivi le righe dei dati
