@@ -3,5 +3,6 @@ node_modules
 .DS_Store
 /data/products/*.json
 /data/products/*.txt
+/data/products/*.xlsx
 auth.json
 /Products/Scripts/auth.json
